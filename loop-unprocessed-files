@@ -3,126 +3,54 @@
 PREFIX="Loop unprocessed files"
 API=${API:-http://localhost:3000}
 
-./update-data.sh
-
 # loop forever
 while :
 do
-
   # request a file to be processed
 
-  DATASET=`curl -sS --header 'Accept: application/json' \
-  -G --data-urlencode \
-  "$API//internal/file/next"`
+  DATASET=`curl --header 'Accept: application/json' "$API/internal/file/next"`
+
+  echo $DATASET
   
-  MD5=`echo $DATASET | xmllint --xpath '//md5/text()' -` 2> "/dev/null"
-  DSID=`echo $DATASET | xmllint --xpath '//id/text()' -` 2> "/dev/null"
+  ID=`echo $DATASET | xmllint --xpath '//_id/text()' -` 2> "/dev/null"
   
-  if [ -z $MD5 ]; then
+  if [ -z $ID ]; then
     echo "$PREFIX: Nothing found to process, waiting"
     sleep 1m
   
   else
-    echo "$PREFIX: Found $MD5 -- start processing"
+    echo "$PREFIX: Got $ID -- start processing"
     
-    NOW=`date --iso-8601=seconds`
-    APIDATA="{\"processing\": \"$NOW\"}"
-  
-    echo "$PREFIX: update iati-datasets $MD5 to indicate processing"
-    curl -sS -X POST --header 'Content-Type: application/json' --header 'Accept: application/json' \
-    -d "$APIDATA" \
-    "$API/iati-datasets/update?where=%7B%22id%22%3A%22$DSID%22%7D"
-
-    echo "$PREFIX: process $MD5"
-    
-    ###OLD INHOUSE
     cd /home
 
     PREFIX="Inhouse files"
-    API=${API:-http://validator-api/api/v1}
-    BUCKET_SRC=${BUCKET_SRC:-dataworkbench-iati}
-    BUCKET_FB=${BUCKET_FB:-dataworkbench-iatifeedback}
-    BUCKET_JSON=${BUCKET_JSON:-dataworkbench-json}
-    BUCKET_SVRL=${BUCKET_SVRL:-dataworkbench-svrl}
     VERSION=`grep 'variable name="schemaVersion"' lib/iati-rulesets/rules/iati.xslt | cut -f 2 -d \> | cut -f 1 -d \<`
-
 
     # Try to get the file via our API
 
     mkdir -p /work/space/input
 
-    HTTP_STATUS=$(curl -s "$API/iati-files/$BUCKET_SRC/download/$MD5.xml" -o "/work/space/input/$MD5.xml" -w "%{http_code}")
-    echo "$PREFIX: retrieved $MD5.xml with status $HTTP_STATUS"
+    HTTP_STATUS=$(curl -s "$API/iati-files/$BUCKET_SRC/download/$ID.xml" -o "/work/space/input/$ID.xml" -w "%{http_code}")
+    echo "$PREFIX: retrieved $ID.xml with status $HTTP_STATUS"
 
     # If available:
     if [[ $HTTP_STATUS == 200 ]]; then 
       # Make sure we process the file again by removing the target for ant
-      rm -f /work/space/dest/$MD5.feedback.xml
+      
       # Run the XML check and the rules
-      ant -f build-engine.xml -Dfilemask=$MD5 feedback
+      ant -f build-engine.xml -Dfilemask=$ID feedback
+      # Make the JSON conversion     
+      ant -f build-engine.xml -Dfilemask=$ID json
       
       # Store the result
-      
-      echo "$PREFIX: store feedback for $MD5"
-      curl -sS -F "file=@/work/space/dest/$MD5.feedback.xml;type=application/xml" "$API/iati-files/$BUCKET_FB/upload"
-      
-      FILEDATE=$(date -Iseconds -r /work/space/dest/$MD5.feedback.xml)
-      
-      APIDATA="{\"md5\": \"$MD5\", \"feedback-updated\": \"$FILEDATE\", \"feedback-version\": \"$VERSION\"}"
-      
-      echo "$PREFIX: update iati-datasets for feedback on $MD5"
-      curl -sS -X POST --header 'Content-Type: application/json' --header 'Accept: application/json' \
-      -d "$APIDATA" \
-      "$API/iati-datasets/update?where=%7B%22md5%22%3A%22$MD5%22%7D"
-      
-      # Run the JSON conversion
-      rm -f /work/space/json/$MD5.json
-      ant -f build-engine.xml -Dfilemask=$MD5 json
-      
-      # Store the result
-      echo "$PREFIX: store json for $MD5"
-      curl -sS -F "file=@/work/space/json/$MD5.json;type=application/json" "$API/iati-files/$BUCKET_JSON/upload"
-      
-      FILEDATE=$(date -Iseconds -r /work/space/json/$MD5.json)
-      
-      APIDATA="{\"md5\": \"$MD5\", \"json-updated\": \"$FILEDATE\", \"json-version\": \"$VERSION\"}"
-      
-      echo "$PREFIX: update iati-datasets for json on $MD5"
-      curl -sS -X POST --header 'Content-Type: application/json' --header 'Accept: application/json' \
-      -d "$APIDATA" \
-      "$API/iati-datasets/update?where=%7B%22md5%22%3A%22$MD5%22%7D"
-      
-      # Run the SVRL conversion
-      rm -f /work/space/svrl/$MD5.svrl
-      ant -f build-engine.xml -Dfilemask=$MD5 svrl
-      
-      # Store the result
-      
-      if xmllint --noout /work/space/svrl/$MD5.svrl 2> "/dev/null"; then
-        echo "$PREFIX: store svrl for $MD5"
-        curl -sS -F "file=@/work/space/svrl/$MD5.svrl;type=application/xml" "$API/iati-files/$BUCKET_SVRL/upload"
-      
-        FILEDATE=$(date -Iseconds -r /work/space/svrl/$MD5.svrl)
-      
-        APIDATA="{\"md5\": \"$MD5\", \"svrl-updated\": \"$FILEDATE\", \"svrl-version\": \"$VERSION\"}"
-      
-        echo "$PREFIX: update iati-datasets for svrl on $MD5"
-        curl -sS -X POST --header 'Content-Type: application/json' --header 'Accept: application/json' \
-        -d "$APIDATA" \
-        "$API/iati-datasets/update?where=%7B%22md5%22%3A%22$MD5%22%7D"
-      else
-        echo "$PREFIX: svrl for $MD5 is not valid XML"
-      fi
+      echo "$PREFIX: store json for $ID"
+      curl -sS -F "file=@/work/space/json/$ID.json;type=application/json" "$API/iati-files/$BUCKET_JSON/upload"
 
+      rm -f /work/space/dest/$ID.feedback.xml
+      rm -f /work/space/json/$ID.json
+    else
+      echo "ballsed it"
     fi
-
-    # Remove the files from the local node if no second parameter given (allows to keep the artefacts for debugging)
-    if [[ -z $2 ]]; then
-      find /work/space -name "${MD5}*" -delete
-    fi
-
-    ###END OLD INHOUSE
- 
   fi
   
 done
